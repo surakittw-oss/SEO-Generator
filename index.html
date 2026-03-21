@@ -361,124 +361,179 @@ function copyAll() {
 
 // ─── CORE LOGIC (no API, pure JS) ────────────────────
 
-// ดึง keywords จากเนื้อหา
+// stopwords ภาษาไทย
+const STOP_TH = new Set([
+  'และ','ของ','ที่','ใน','มี','ให้','การ','จาก','โดย','ได้','นี้','เป็น','กับ','แต่',
+  'หรือ','ซึ่ง','จะ','มา','ไม่','เพื่อ','ว่า','ไป','ออก','ขึ้น','ลง','ก็','ทำ','นั้น',
+  'อยู่','แล้ว','ต้อง','ทาง','ถึง','ตาม','ทั้ง','เข้า','ส่ง','กัน','อีก','เมื่อ','เรา',
+  'เขา','เธอ','มัน','คือ','ใช้','เพิ่ม','ร่วม','ไว้','นำ','พบ','กล่าว','เปิด','ปิด',
+  'รับ','สู่','ผล','งาน','เวลา','หลัง','ก่อน','ระหว่าง','ด้วย','ต่อ','บน','ล่าง',
+  'เหล่า','บาง','ทุก','ชาว','เอง','ซึ่ง','อัน','ซี','นา','คน','ที่สุด','โดย','สำหรับ',
+  'ประมาณ','กว่า','เกี่ยว','เกี่ยวกับ','ความ','ทำให้','เริ่ม','ต่างๆ','ดัง','แบบ',
+  'ดัง','ดัง','นับ','ถือ','เดิน','ไม่ว่า','ดังนั้น','อย่างไรก็ตาม','จึง','เพราะ'
+])
+
+// ดึง keywords สำคัญจากเนื้อหา (ไม่เอาชื่อคน นามสกุล)
 function extractKeywords(text) {
-  // ดึงคำที่ปรากฏบ่อยที่สุด (ยกเว้น stopwords)
-  const stopTH = new Set(['และ','ของ','ที่','ใน','มี','ให้','การ','จาก','โดย','ได้','นี้','เป็น','กับ','แต่','หรือ','ซึ่ง','จะ','มา','ไม่','เพื่อ','ว่า','ไป','ออก','ขึ้น','ลง','ก็','ทำ','นั้น','อยู่','แล้ว','ต้อง','ทาง','ถึง','ตาม','ทั้ง','เข้า','ส่ง','กัน','อีก','เมื่อ','เรา','เขา','เธอ','มัน','คือ','ใช้','เพิ่ม','ร่วม','ไว้','นำ','พบ','กล่าว','เปิด','ปิด','รับ','จาก','สู่','ผล','งาน','เวลา','หลัง','ก่อน','ระหว่าง'])
-  const words = text.match(/[\u0E00-\u0E7Fa-zA-Z0-9]+/g) || []
+  const words = text.match(/[\u0E00-\u0E7F]{3,}|[a-zA-Z]{3,}/g) || []
   const freq = {}
   words.forEach(w => {
-    if (w.length > 2 && !stopTH.has(w)) {
+    if (!STOP_TH.has(w) && !/^[A-Z][a-z]/.test(w)) {  // ไม่เอา PascalCase (ชื่อคน)
       freq[w] = (freq[w]||0) + 1
     }
   })
   return Object.entries(freq)
     .sort((a,b) => b[1]-a[1])
-    .slice(0, 20)
+    .slice(0, 25)
     .map(e => e[0])
 }
 
-// ดึงหัวข้อหลักจากเนื้อหา
-function extractMainTopic(text, keywords) {
-  // ใช้ประโยคแรกหรือ 100 ตัวอักษรแรก
-  const first = text.trim().split(/[\n。.!?]/)[0].trim()
-  return first.length > 10 ? first : text.trim().substring(0, 100)
+// ดึง topic หลักจากเนื้อหา
+// ใช้บรรทัดแรกที่มีความยาวพอเหมาะ (10-120 ตัวอักษร)
+function extractMainTopic(text) {
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 10)
+  // เอาบรรทัดแรกที่ไม่ยาวเกิน 120 ตัวอักษร
+  const firstLine = lines.find(l => l.length <= 120) || lines[0] || text.substring(0,100)
+  // ตัดให้ไม่เกิน 80 ตัวอักษร
+  return firstLine.length > 80 ? firstLine.substring(0,77)+'...' : firstLine
 }
 
-// สร้าง slug จาก topic
-function makeSlug(text, keywords) {
-  // เอา keyword ภาษาอังกฤษก่อน
-  const enWords = (text.match(/[a-zA-Z]+/g) || []).filter(w => w.length > 2)
-  if (enWords.length >= 2) {
-    return enWords.slice(0, 5).join('-').toLowerCase()
+// แผนที่คำไทย → ภาษาอังกฤษสำหรับ slug (ขยายใหม่ครอบคลุมกว่าเดิม)
+const TH_SLUG_MAP = [
+  // เศรษฐกิจ/การเงิน
+  ['เศรษฐกิจ','economy'],['การเงิน','finance'],['เงิน','money'],
+  ['ราคา','price'],['ตลาด','market'],['หุ้น','stock'],['บาท','baht'],
+  ['ดอกเบี้ย','interest'],['อัตรา','rate'],['ลงทุน','invest'],
+  ['ธนาคาร','bank'],['แบงก์','bank'],['งบประมาณ','budget'],
+  ['ภาษี','tax'],['กำไร','profit'],['ขาดทุน','loss'],
+  // การเมือง/รัฐบาล
+  ['รัฐบาล','government'],['นโยบาย','policy'],['นายกรัฐมนตรี','pm'],
+  ['รัฐสภา','parliament'],['เลือกตั้ง','election'],['พรรค','party'],
+  ['กฎหมาย','law'],['ศาล','court'],['รัฐมนตรี','minister'],
+  // เทคโนโลยี
+  ['เทคโนโลยี','tech'],['ดิจิทัล','digital'],['ปัญญาประดิษฐ์','ai'],
+  ['คริปโต','crypto'],['บิทคอยน์','bitcoin'],['ซอฟต์แวร์','software'],
+  ['แอปพลิเคชัน','app'],['อินเทอร์เน็ต','internet'],
+  // พลังงาน/สิ่งแวดล้อม
+  ['น้ำมัน','oil'],['พลังงาน','energy'],['สิ่งแวดล้อม','environment'],
+  ['โซลาร์','solar'],['ไฟฟ้า','electric'],['ก๊าซ','gas'],
+  // สังคม/สุขภาพ
+  ['สุขภาพ','health'],['โรค','disease'],['วัคซีน','vaccine'],
+  ['การศึกษา','education'],['โรงเรียน','school'],['มหาวิทยาลัย','university'],
+  ['กีฬา','sport'],['บันเทิง','entertainment'],['ภาพยนตร์','film'],
+  ['ดนตรี','music'],['ท่องเที่ยว','travel'],
+  // ประเทศ/ภูมิภาค
+  ['ไทย','thailand'],['จีน','china'],['สหรัฐ','usa'],['ยุโรป','europe'],
+  ['อาเซียน','asean'],['ญี่ปุ่น','japan'],['เกาหลี','korea'],
+  ['อินเดีย','india'],['รัสเซีย','russia'],['ยูเครน','ukraine'],
+  // ธุรกิจ
+  ['ธุรกิจ','business'],['บริษัท','company'],['สตาร์ทอัพ','startup'],
+  ['อสังหาริมทรัพย์','property'],['การค้า','trade'],['ส่งออก','export'],
+  // ข่าว/สื่อ
+  ['ข่าว','news'],['รายงาน','report'],['วิเคราะห์','analysis'],
+  ['สัมภาษณ์','interview'],['เปิดเผย','revealed'],['ประกาศ','announced'],
+]
+
+// สร้าง slug อัจฉริยะ
+function makeSlug(text, topic) {
+  // 1. เอาคำอังกฤษที่มีความหมาย (ไม่ใช่ชื่อคน) จาก text
+  const enWords = (text.match(/\b[a-z][a-z0-9]{2,}\b/gi) || [])
+    .filter(w => !['the','and','for','are','but','not','you','all','can','her',
+                   'was','one','our','out','day','get','has','him','his','how',
+                   'its','may','new','now','old','see','two','way','who','did',
+                   'ask','big','end','far','got','let','put','say','too','use'].includes(w.toLowerCase()))
+    .map(w => w.toLowerCase())
+
+  // เอา unique en words ที่ปรากฏ > 1 ครั้ง หรือทั้งหมดถ้าน้อย
+  const enFreq = {}
+  enWords.forEach(w => enFreq[w] = (enFreq[w]||0)+1)
+  const goodEn = Object.entries(enFreq).sort((a,b)=>b[1]-a[1]).map(e=>e[0])
+
+  // 2. แปลงคำไทยสำคัญจาก text เป็น slug
+  let slugParts = []
+  for (const [th, en] of TH_SLUG_MAP) {
+    if (text.includes(th) && !slugParts.includes(en)) {
+      slugParts.push(en)
+      if (slugParts.length >= 3) break
+    }
   }
-  // ถ้าไม่มีอังกฤษ แปลงเป็น romanized อย่างง่าย
-  const thMap = {
-    'ไทย':'thai','ประเทศ':'thailand','เศรษฐกิจ':'economy','การเงิน':'finance',
-    'เงิน':'money','ราคา':'price','ตลาด':'market','หุ้น':'stock','บาท':'baht',
-    'รัฐบาล':'government','นโยบาย':'policy','ดอกเบี้ย':'interest','อัตรา':'rate',
-    'เทคโนโลยี':'tech','ดิจิทัล':'digital','AI':'ai','ข่าว':'news',
-    'บทความ':'article','วิเคราะห์':'analysis','รายงาน':'report',
-    'สุขภาพ':'health','กีฬา':'sport','บันเทิง':'entertainment',
-    'น้ำมัน':'oil','พลังงาน':'energy','สิ่งแวดล้อม':'environment',
-    'การศึกษา':'education','สังคม':'society','วัฒนธรรม':'culture',
-    'ธุรกิจ':'business','บริษัท':'company','ลงทุน':'invest',
-    'แบงก์':'bank','ธนาคาร':'bank','Apple':'apple','iPhone':'iphone',
-    'โลก':'world','เอเชีย':'asia','อาเซียน':'asean','จีน':'china',
-    'สหรัฐ':'usa','ยุโรป':'europe','คริปโต':'crypto','บิทคอยน์':'bitcoin'
-  }
-  let slug = ''
-  for (const [th, en] of Object.entries(thMap)) {
-    if (text.includes(th)) slug += (slug ? '-' : '') + en
-    if (slug.split('-').length >= 4) break
-  }
-  // เพิ่ม english keywords
-  keywords.filter(k => /^[a-zA-Z]+$/.test(k)).slice(0,2).forEach(k => {
-    if (!slug.includes(k.toLowerCase())) slug += (slug?'-':'') + k.toLowerCase()
+
+  // 3. เติม en words ที่มีความหมาย (ยกเว้น common words)
+  goodEn.slice(0,3).forEach(w => {
+    if (!slugParts.includes(w) && slugParts.length < 4) slugParts.push(w)
   })
-  return slug || keywords.slice(0,3).filter(k=>/[a-zA-Z]/.test(k)).join('-').toLowerCase() || 'news-article'
-}
 
-// สร้าง meta description
-function makeMeta(text, keyword, angle) {
-  const clean = text.replace(/\s+/g,' ').trim()
-  const base = clean.length > 400 ? clean.substring(0, 400) : clean
-
-  const angles = {
-    'search': `${keyword} — ${base.substring(0, 280)} ติดตามข่าวสารและข้อมูลล่าสุดได้ที่นี่`,
-    'emotion': `รู้หรือไม่? ${base.substring(0, 250)} อ่านเพิ่มเติมและเข้าใจสิ่งที่เกิดขึ้นได้เลย`,
-    'geo': `${keyword} คือ ${base.substring(0, 260)} ข้อมูลนี้ถูกต้องและอัปเดตล่าสุด`,
-    'voice': `ถ้าคุณต้องการรู้เกี่ยวกับ${keyword} ${base.substring(0, 240)} นี่คือคำตอบที่ตรงที่สุด`,
-    'balanced': `${base.substring(0, 300)} รวมข้อมูล ${keyword} ครบถ้วนในที่เดียว`
+  // 4. ถ้ายังน้อยเกินไป ดึงจาก topic ไทย
+  if (slugParts.length < 2) {
+    for (const [th, en] of TH_SLUG_MAP) {
+      if (topic.includes(th) && !slugParts.includes(en)) {
+        slugParts.push(en)
+        if (slugParts.length >= 3) break
+      }
+    }
   }
-  const meta = (angles[angle] || angles['balanced']).substring(0, 650)
-  // ลบ " และ ,
-  return meta.replace(/[",]/g, '').trim()
+
+  const slug = slugParts.slice(0,5).join('-')
+  return slug || 'news-article'
 }
 
-// สร้าง titles ตาม angle
-function makeTitles(topic, keyword, angle, idx) {
-  const short = topic.length > 50 ? topic.substring(0,47)+'...' : topic
-  const kw = keyword
+// สร้าง Meta Description ตาม angle
+function makeMeta(text, topic, keyword, angle) {
+  // ดึงประโยคสำคัญจากเนื้อหา (ไม่ตัดกลางประโยค)
+  const clean = text.replace(/\s+/g,' ').trim()
+  // หาประโยคที่มี keyword
+  const sentences = clean.split(/[.!?]/)
+  const relevant = sentences.filter(s => s.includes(keyword) || s.includes(topic.substring(0,15)))
+  const core = (relevant[0] || sentences[0] || clean).trim().substring(0, 250)
+
+  const templates = {
+    search:   `${topic} — ${core} อัปเดตข้อมูลล่าสุดและติดตามความเคลื่อนไหวได้ที่นี่`,
+    emotion:  `รู้จัก${topic}ให้ลึกขึ้น ${core} ทำไมเรื่องนี้ถึงกระทบคุณโดยตรง`,
+    geo:      `${topic} ${core} นี่คือข้อมูลที่ถูกต้องและครบถ้วนสำหรับการค้นหาบน AI Search`,
+    voice:    `ถามว่า${topic}คืออะไร ตอบได้เลยว่า ${core} ค้นหาข้อมูลเพิ่มเติมได้ที่นี่`,
+    balanced: `${core} ครบทุกมุมมองเกี่ยวกับ${topic} พร้อมวิเคราะห์เชิงลึกและข้อมูลล่าสุด`
+  }
+  return (templates[angle] || templates.balanced).substring(0,650).replace(/[",]/g,'').trim()
+}
+
+// สร้าง Titles ตาม angle (ใช้ topic จริงๆ ไม่ใช่แค่ keyword เดี่ยว)
+function makeTitles(topic, keyword, idx) {
+  // ตัด topic ให้พอดีกับ SEO title (60 ตัวอักษร)
+  const shortTopic = topic.length > 45 ? topic.substring(0,42)+'...' : topic
+  const shortKw    = keyword.length > 20 ? keyword.substring(0,18)+'...' : keyword
 
   const variants = [
-    // 1: High Search Volume — ตรง keyword
     {
-      seo:     `${kw} อัปเดตล่าสุด ข้อมูลครบถ้วน`.substring(0,60),
-      fb:      `เปิดข้อมูล ${kw} ทุกอย่างที่คุณต้องรู้ตอนนี้`,
-      twitter: `${kw} — อ่านก่อนใคร`,
-      focus:   'High Search Volume'
+      focus:   'High Search Volume',
+      seo:     `${shortTopic}`.substring(0,60),
+      fb:      `เปิดทุกข้อมูล ${topic}`,
+      twitter: `${topic} — อ่านก่อนใคร`
     },
-    // 2: Emotional Hook
     {
-      seo:     `ทำไม ${kw} ถึงสำคัญกับคุณตอนนี้`.substring(0,60),
-      fb:      `คนส่วนใหญ่ยังไม่รู้เรื่องนี้เกี่ยวกับ ${kw}`,
-      twitter: `เรื่องของ ${kw} ที่คุณไม่ควรพลาด`,
-      focus:   'Emotional Hook'
+      focus:   'Emotional Hook',
+      seo:     `ทำไม ${shortKw} ถึงสำคัญตอนนี้`.substring(0,60),
+      fb:      `เรื่องของ ${topic} ที่คนส่วนใหญ่ยังไม่รู้`,
+      twitter: `${topic} — เรื่องที่คุณไม่ควรพลาด`
     },
-    // 3: GEO AI-ready
     {
-      seo:     `${kw} คืออะไร ทำไมต้องรู้`.substring(0,60),
-      fb:      `${kw}: ข้อเท็จจริงที่ AI และ Google ยืนยัน`,
-      twitter: `ข้อมูลจริงเกี่ยวกับ ${kw} ที่ AI อ้างอิงได้`,
-      focus:   'GEO — AI Ready'
+      focus:   'GEO — AI Ready',
+      seo:     `${shortTopic} ข้อมูลครบถ้วน`.substring(0,60),
+      fb:      `${topic}: ข้อเท็จจริงที่ AI และ Google ยืนยัน`,
+      twitter: `${topic} — ข้อมูลที่ AI อ้างอิงได้`
     },
-    // 4: AEO Voice Search
     {
-      seo:     `${kw} คืออะไร ตอบทุกคำถาม`.substring(0,60),
-      fb:      `ถามเรื่อง ${kw} ได้เลย คำตอบอยู่ที่นี่`,
-      twitter: `"${kw}" — คำถามที่คนถามมากที่สุด`,
-      focus:   'AEO — Voice Search'
+      focus:   'AEO — Voice Search',
+      seo:     `${shortKw} คืออะไร ตอบทุกคำถาม`.substring(0,60),
+      fb:      `ทุกคำถามเกี่ยวกับ ${topic} ตอบได้ที่นี่`,
+      twitter: `${topic} — คำถามที่คนถามมากที่สุด`
     },
-    // 5: Balanced
     {
-      seo:     short.substring(0,60),
-      fb:      `${short} — วิเคราะห์และอัปเดตล่าสุด`,
-      twitter: `${kw} | ${short.substring(0,40)}`,
-      focus:   'Balanced All-in-one'
-    },
+      focus:   'Balanced All-in-one',
+      seo:     `${shortTopic}`.substring(0,60),
+      fb:      `${topic} — วิเคราะห์และอัปเดตล่าสุด`,
+      twitter: `${topic} | ${shortKw}`
+    }
   ]
-
   return variants[idx] || variants[4]
 }
 
@@ -492,11 +547,11 @@ function generate() {
   document.getElementById('btn-copy-all').style.display = 'none'
   document.getElementById('btn-gen').disabled = true
 
-  // วิเคราะห์
+  // วิเคราะห์ด้วย logic ใหม่
   const keywords = extractKeywords(text)
-  const topic    = extractMainTopic(text, keywords)
+  const topic    = extractMainTopic(text)
   const mainKw   = keywords[0] || topic.substring(0,20)
-  const slug     = makeSlug(text, keywords)
+  const slug     = makeSlug(text, topic)
 
   // Schema type detection
   let schema = 'NewsArticle'
@@ -515,8 +570,8 @@ function generate() {
   let html = ''
   for (let i = 0; i < 5; i++) {
     const kw    = i < 3 ? keywords[i] || mainKw : mainKw
-    const meta  = makeMeta(text, kw, angles[i])
-    const t     = makeTitles(topic, kw, angles[i], i)
+    const meta  = makeMeta(text, topic, kw, angles[i])
+    const t     = makeTitles(topic, kw, i)
     const cardSlug = i === 0 ? slug : slug + (i > 0 ? '-' + ['', 'update', 'guide', 'explained', 'facts'][i] : '')
 
     const cardText = [
