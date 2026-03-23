@@ -525,62 +525,133 @@ const TH2EN = [
 ]
 
 function autoGenerate(text) {
-  const words = (text.match(/[\u0E00-\u0E7F]{3,}|[a-zA-Z]{3,}/g) || [])
-    .filter(w => !STOP.has(w) && !/^[A-Z][a-z]/.test(w))
-  const freq = {}
-  words.forEach(w => freq[w] = (freq[w]||0)+1)
-  const kws = Object.entries(freq).sort((a,b)=>b[1]-a[1]).map(e=>e[0])
 
-  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean)
-  const topic = lines.find(l => l.length > 10 && l.length < 100) || text.substring(0,80)
-  const shortTopic = topic.length > 55 ? topic.substring(0,52)+'...' : topic
-  const kw = kws[0] || topic.substring(0,20)
+  // ── 1. ดึง Named Entities (แบรนด์ ชื่อคน สถานที่) ──
+  // คำที่ขึ้นต้นด้วยตัวพิมพ์ใหญ่ หรือ ALL CAPS = แบรนด์/ชื่อเฉพาะ
+  const entities = (text.match(/\b[A-Z][A-Za-z0-9+&'.\-]{1,}\b|\b[A-Z]{2,}\b/g) || [])
+    .filter(w => !['A','I','The','An','In','On','At','To','For','Of','By','Is','Are','Was','And','But','Or','Not','New','All'].includes(w))
 
-  // slug
+  // ── 2. ดึง keyword ภาษาไทย (ความถี่สูง ไม่ใช่ stopword) ──
+  const thWords = (text.match(/[\u0E00-\u0E7F]{3,}/g) || []).filter(w => !STOP.has(w))
+  const thFreq = {}
+  thWords.forEach(w => thFreq[w] = (thFreq[w]||0)+1)
+  const topTh = Object.entries(thFreq).sort((a,b)=>b[1]-a[1]).slice(0,10).map(e=>e[0])
+
+  // ── 3. หา Topic หลัก ──
+  // เอาบรรทัดแรกที่ไม่ว่าง ไม่ใช่ URL ความยาว 15-120 ตัวอักษร
+  const lines = text.split('\n').map(l=>l.trim()).filter(l=>l.length>14 && l.length<121 && !l.startsWith('http'))
+  const topic = lines[0] || text.substring(0,100).trim()
+  const shortTopic = topic.length > 60 ? topic.substring(0,57)+'...' : topic
+
+  // ── 4. สร้าง Slug จาก entities + topTh ──
+  // ใช้ entities แบรนด์ก่อน แล้วตามด้วย keyword ไทยแปลงเป็น EN
   let slugParts = []
-  for (const [th,en] of TH2EN) {
-    if (text.includes(th) && !slugParts.includes(en)) { slugParts.push(en); if(slugParts.length>=3) break }
+
+  // เอา entity ที่สำคัญ (ไม่ใช่คำทั่วไป)
+  const skipEnt = new Set(['BTS','ARMY','Spotify','Apple','Google','YouTube','Facebook','Instagram','LINE','Netflix','Disney','Amazon','Microsoft','Samsung'])
+  entities.slice(0,4).forEach(e => {
+    const s = e.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')
+    if (s.length > 1 && !slugParts.includes(s)) slugParts.push(s)
+  })
+
+  // เพิ่มจาก TH2EN map
+  if (slugParts.length < 3) {
+    for (const [th,en] of TH2EN) {
+      if (text.includes(th) && !slugParts.includes(en)) {
+        slugParts.push(en)
+        if (slugParts.length >= 4) break
+      }
+    }
   }
-  const enW = (text.match(/\b[a-z][a-z0-9]{2,}\b/gi)||[]).filter(w=>!['the','and','for','are','but','not','was','has'].includes(w.toLowerCase())).map(w=>w.toLowerCase())
-  enW.slice(0,2).forEach(w=>{ if(!slugParts.includes(w) && slugParts.length<4) slugParts.push(w) })
-  const slug = slugParts.slice(0,5).join('-') || 'news-article'
 
-  // meta base
+  const slug = slugParts.slice(0,5).join('-').replace(/--+/g,'-') || 'news-article'
+
+  // ── 5. เลือก Primary Keyword ──
+  // ถ้ามี entity แบรนด์ ให้เอา entity + keyword ไทยรวม
+  const primaryKw = entities.length > 0
+    ? (entities.slice(0,2).join(' ') + (topTh[0] ? ' ' + topTh[0] : '')).trim()
+    : topTh[0] || topic.substring(0,20)
+
+  const kw2 = topTh[0] || primaryKw
+  const kw3 = topTh[1] || kw2
+
+  // ── 6. ดึงประโยคสำคัญสำหรับ Meta ──
+  // ไม่ตัดกลางประโยค เอาประโยคที่มี entity หรือ keyword
   const clean = text.replace(/\s+/g,' ').trim()
-  const sentences = clean.split(/[.!?]/).map(s=>s.trim()).filter(s=>s.length>20)
-  const core = (sentences.find(s=>s.includes(kw))||sentences[0]||clean).substring(0,250)
+  const allSents = clean.split(/(?<=[.!?])\s+/).filter(s=>s.length>20)
+  const relevantSent = allSents.find(s => entities.some(e=>s.includes(e)) || topTh.slice(0,3).some(k=>s.includes(k))) || allSents[0] || clean.substring(0,200)
+  const coreSent = relevantSent.substring(0,220).trim()
 
-  // schema
+  // ── 7. Schema Type ──
   let schema = 'NewsArticle'
-  if (text.includes('วิธี')||text.includes('ขั้นตอน')) schema='HowTo'
-  else if (text.includes('คำถาม')||text.includes('FAQ')) schema='FAQPage'
-  else if (!text.includes('ข่าว')&&!text.includes('รายงาน')) schema='Article'
+  if (/วิธี|ขั้นตอน|how to/i.test(text)) schema = 'HowTo'
+  else if (/คำถาม|FAQ|ถาม-ตอบ/i.test(text)) schema = 'FAQPage'
+  else if (entities.length < 2 && !/ข่าว|รายงาน|ประกาศ/.test(text)) schema = 'Article'
 
-  const altText = `${kw} - ${topic}`.replace(/[",]/g,'').substring(0,125)
+  const altText = `${primaryKw} - ${topic}`.replace(/[",]/g,'').substring(0,125)
+
+  // ── 8. สร้าง 5 รูปแบบ ──
+  // Meta Description: ไม่ใช้ template ตายตัว เน้น coreSent เป็นฐาน
+  const metaBase = coreSent.replace(/[",]/g,'')
 
   return {
     results: [
-      { num:1, focus:'High Search Volume', keyword:kw,
-        meta:`${kw} — ${core} อัปเดตข้อมูลล่าสุดและติดตามความเคลื่อนไหวได้ที่นี่`.replace(/[",]/g,'').substring(0,650),
-        seo_title:`${shortTopic}`.substring(0,60), fb_title:`เปิดทุกข้อมูล ${topic}`, twitter:`${topic} — อ่านก่อนใคร`, slug, alt_text:altText },
-      { num:2, focus:'Emotional Hook', keyword:kws[1]||kw,
-        meta:`รู้จัก${topic}ให้ลึกขึ้น ${core} ทำไมเรื่องนี้ถึงกระทบคุณโดยตรง`.replace(/[",]/g,'').substring(0,650),
-        seo_title:`ทำไม ${(kws[1]||kw).substring(0,20)} ถึงสำคัญตอนนี้`.substring(0,60), fb_title:`เรื่องของ ${topic} ที่คนส่วนใหญ่ยังไม่รู้`, twitter:`${topic} — เรื่องที่คุณไม่ควรพลาด`, slug:`${slug}-explained`, alt_text:altText },
-      { num:3, focus:'GEO — AI Ready', keyword:kws[2]||kw,
-        meta:`${topic} ${core} นี่คือข้อมูลที่ถูกต้องและครบถ้วนสำหรับการค้นหาบน AI Search`.replace(/[",]/g,'').substring(0,650),
-        seo_title:`${shortTopic} ข้อมูลครบถ้วน`.substring(0,60), fb_title:`${topic}: ข้อเท็จจริงที่ AI ยืนยัน`, twitter:`${topic} — ข้อมูลที่ AI อ้างอิงได้`, slug:`${slug}-facts`, alt_text:altText },
-      { num:4, focus:'AEO — Voice Search', keyword:kw,
-        meta:`ถามว่า${kw}คืออะไร ตอบได้เลยว่า ${core} ค้นหาข้อมูลเพิ่มเติมได้ที่นี่`.replace(/[",]/g,'').substring(0,650),
-        seo_title:`${kw} คืออะไร ตอบทุกคำถาม`.substring(0,60), fb_title:`ทุกคำถามเกี่ยวกับ ${topic} ตอบได้ที่นี่`, twitter:`${topic} — คำถามที่คนถามมากที่สุด`, slug:`${slug}-guide`, alt_text:altText },
-      { num:5, focus:'Balanced All-in-one', keyword:kw,
-        meta:`${core} ครบทุกมุมมองเกี่ยวกับ${topic} พร้อมวิเคราะห์เชิงลึกและข้อมูลล่าสุด`.replace(/[",]/g,'').substring(0,650),
-        seo_title:`${shortTopic}`.substring(0,60), fb_title:`${topic} — วิเคราะห์และอัปเดตล่าสุด`, twitter:`${topic} | ${kw}`, slug, alt_text:altText },
+      {
+        num: 1, focus: 'High Search Volume',
+        keyword: primaryKw,
+        meta: `${metaBase} ติดตามข้อมูลล่าสุดและรายละเอียดครบถ้วนได้ที่นี่`.substring(0,650).replace(/[",]/g,''),
+        seo_title: shortTopic.substring(0,60),
+        fb_title: `${topic}`.substring(0,80),
+        twitter: `${primaryKw} — ${topic.substring(0,50)}`,
+        slug,
+        alt_text: altText
+      },
+      {
+        num: 2, focus: 'Emotional Hook',
+        keyword: kw2,
+        meta: `${metaBase} เรื่องนี้กระทบคุณโดยตรงและไม่ควรพลาด`.substring(0,650).replace(/[",]/g,''),
+        seo_title: `${shortTopic.substring(0,45)} ที่คุณต้องรู้`.substring(0,60),
+        fb_title: `ทำไม ${topic.substring(0,45)} ถึงสำคัญ`,
+        twitter: `${topic.substring(0,55)} — ไม่ควรพลาด`,
+        slug: slug + '-update',
+        alt_text: altText
+      },
+      {
+        num: 3, focus: 'GEO — AI Ready',
+        keyword: primaryKw,
+        meta: `${primaryKw}: ${metaBase} ข้อมูลนี้ถูกต้องและครบถ้วนสำหรับ AI Search`.substring(0,650).replace(/[",]/g,''),
+        seo_title: `${shortTopic.substring(0,48)} ข้อมูลครบ`.substring(0,60),
+        fb_title: `${primaryKw}: ข้อเท็จจริงที่ AI ยืนยัน`,
+        twitter: `${primaryKw} — ข้อมูลที่ AI อ้างอิงได้`,
+        slug: slug + '-explained',
+        alt_text: altText
+      },
+      {
+        num: 4, focus: 'AEO — Voice Search',
+        keyword: kw3,
+        meta: `${kw3}คืออะไร ${metaBase} ค้นหาคำตอบเพิ่มเติมได้ที่นี่`.substring(0,650).replace(/[",]/g,''),
+        seo_title: `${kw3} คืออะไร ครบทุกคำตอบ`.substring(0,60),
+        fb_title: `ทุกคำถามเกี่ยวกับ ${kw3} ตอบได้ที่นี่`,
+        twitter: `${kw3} — คำถามยอดฮิต`,
+        slug: slug + '-guide',
+        alt_text: altText
+      },
+      {
+        num: 5, focus: 'Balanced All-in-one',
+        keyword: primaryKw,
+        meta: `${metaBase} ครบทุกมุมมองพร้อมข้อมูลล่าสุด`.substring(0,650).replace(/[",]/g,''),
+        seo_title: shortTopic.substring(0,60),
+        fb_title: `${topic.substring(0,60)} — อัปเดตล่าสุด`,
+        twitter: `${primaryKw} | ${topic.substring(0,45)}`,
+        slug,
+        alt_text: altText
+      }
     ],
     extras: {
       schema_type: schema,
-      keyword_density: `แนะนำใส่ "${kw}" ในบทความ 2–3 ครั้ง`,
-      internal_linking: `หัวข้อที่เกี่ยวข้องกับ ${kw} และ ${kws[1]||topic}`,
-      geo_entities: kws.slice(0,5).join(', ')
+      keyword_density: `แนะนำใส่ "${primaryKw}" ในบทความ 2–3 ครั้ง`,
+      internal_linking: `หัวข้อที่เกี่ยวข้อง: ${topTh.slice(0,3).join(' / ')}`,
+      geo_entities: [...entities.slice(0,4), ...topTh.slice(0,2)].join(', ')
     }
   }
 }
