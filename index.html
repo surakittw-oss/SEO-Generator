@@ -467,7 +467,7 @@ const PC = {
   free:      { label: '',          placeholder: '', hint: '', link: '', validate: ()=>true },
   anthropic: { label: 'Anthropic API Key', placeholder: 'sk-ant-api03-...', hint: 'ราคา ~0.003 บาท/บทความ · <a href="https://console.anthropic.com" target="_blank">รับ Key ที่นี่</a>', link: '', validate: v => v.startsWith('sk-ant-') },
   openai:    { label: 'OpenAI API Key',    placeholder: 'sk-proj-...',       hint: 'ใช้ GPT-4o-mini ประหยัด · <a href="https://platform.openai.com/api-keys" target="_blank">รับ Key ที่นี่</a>', link: '', validate: v => v.startsWith('sk-') },
-  gemini:    { label: 'Google Gemini API Key', placeholder: 'AIzaSy...',    hint: 'ฟรี 15 req/นาที · <a href="https://aistudio.google.com/app/apikey" target="_blank">รับ Key ฟรีที่นี่</a>', link: '', validate: v => v.length > 15 },
+  gemini:    { label: 'Google Gemini API Key', placeholder: 'AIzaSy...',    hint: 'ฟรี 15 req/นาที · ใช้ Gemini 2.0 Flash · <a href="https://aistudio.google.com/app/apikey" target="_blank">รับ Key ฟรีที่นี่</a>', link: '', validate: v => v.length > 15 },
 }
 
 // ── SYSTEM PROMPT ───────────────────────────────────────
@@ -597,9 +597,22 @@ async function callOpenAI(key, text) {
   const d=await r.json();return d.choices[0].message.content
 }
 async function callGemini(key, text) {
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${key}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts:[{text:SYS+'\n\nวิเคราะห์และสร้าง SEO GEO AEO 5 รูปแบบ:\n\n'+text}]}],generationConfig:{maxOutputTokens:4096}})})
-  if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error?.message||`Gemini ${r.status}`)}
-  const d=await r.json();return d.candidates[0].content.parts[0].text
+  // ลอง gemini-2.0-flash ก่อน ถ้าไม่ได้ fallback เป็น gemini-1.5-flash-latest
+  const models = ['gemini-2.0-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-flash']
+  let lastErr = null
+  for (const model of models) {
+    try {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts:[{text:SYS+'\n\nวิเคราะห์และสร้าง SEO GEO AEO 5 รูปแบบ:\n\n'+text}]}],generationConfig:{maxOutputTokens:4096,temperature:0.7}})})
+      if (r.status === 404) { lastErr = new Error(`Model ${model} not found`); continue }
+      if (!r.ok) { const e=await r.json().catch(()=>({})); throw new Error(e.error?.message||`Gemini ${r.status}`) }
+      const d=await r.json()
+      return d.candidates[0].content.parts[0].text
+    } catch(e) {
+      if (e.message.includes('not found') || e.message.includes('not supported')) { lastErr=e; continue }
+      throw e
+    }
+  }
+  throw lastErr || new Error('Gemini: ไม่พบ model ที่รองรับ')
 }
 
 // ── GENERATE ────────────────────────────────────────────
