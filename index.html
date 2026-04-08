@@ -1216,100 +1216,119 @@ function renderOutputs(outputs, serp) {
   });
 }
 
-// ─── PROMPT BUILDER (token-efficient) ───
-function buildPrompt() {
-  const keyword = document.getElementById('keyword').value.trim();
-  const title = document.getElementById('seoTitle').value.trim();
-  const meta = document.getElementById('metaDesc').value.trim();
-  const slug = document.getElementById('slug').value.trim();
+// ─── PROMPT 1: scores + checks only (no nested JSON) ───
+function buildPromptChecks() {
+  const keyword     = document.getElementById('keyword').value.trim();
+  const title       = document.getElementById('seoTitle').value.trim();
+  const meta        = document.getElementById('metaDesc').value.trim();
+  const slug        = document.getElementById('slug').value.trim();
   const articleType = document.getElementById('articleType').value;
-  const content = getContent();
+  const content     = getContent();
+  const wordCount   = content.trim() ? content.trim().split(/\s+/).length : 0;
 
-  // Send only first 1500 chars to save tokens
-  const contentSnippet = content.substring(0, 1500);
-  const wordCount = content.trim() ? content.trim().split(/\s+/).length : 0;
+  // Sanitize: strip quotes + newlines so content can't break JSON
+  const snippet = content
+    .substring(0, 1500)
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/"/g, '\u2019')
+    .replace(/\\/g, '')
+    .trim();
 
-  return `Analyze this WordPress article for Yoast SEO, GEO, and AEO. Return ONLY valid JSON, no markdown, no explanation.
+  return `You are a Yoast SEO expert. Return ONLY a valid JSON object, no markdown, no explanation.
 
-INPUTS:
 keyword: "${keyword || 'not provided'}"
-title: "${title || 'not provided'}"
-meta: "${meta || 'not provided'}"
+seo_title: "${title || 'not provided'}"
+meta_desc: "${meta || 'not provided'}"
 slug: "${slug || 'not provided'}"
-type: "${articleType}"
+schema_type: "${articleType}"
 word_count: ${wordCount}
-content_sample: "${contentSnippet.replace(/"/g, "'")}"
+content: "${snippet}"
 
-Return this exact JSON structure:
+Return exactly this JSON (integers for scores, strings for status/name/message):
 {
-  "scores": {"seo": <0-100>, "geo": <0-100>, "aeo": <0-100>},
+  "scores": {"seo": 0, "geo": 0, "aeo": 0},
+  "output": {
+    "title": "",
+    "meta": "",
+    "slug": "",
+    "focus_keyword": "",
+    "secondary": "",
+    "snippet": ""
+  },
   "yoast": [
-    {"status": "red|orange|green", "name": "<Yoast check name>", "message": "<specific finding>"}
+    {"status": "red", "name": "", "message": ""}
   ],
   "geo": [
-    {"status": "red|orange|green", "name": "<check name>", "message": "<finding>"}
+    {"status": "red", "name": "", "message": ""}
   ],
   "aeo": [
-    {"status": "red|orange|green", "name": "<check name>", "message": "<finding>"}
-  ],
-  "output": {
-    "title": "<optimized SEO title ≤60 chars>",
-    "meta": "<optimized meta 120-155 chars with keyword>",
-    "slug": "<english-slug>",
-    "focus_keyword": "<recommended focus keyword>",
-    "secondary": "<kw1, kw2, kw3, kw4>",
-    "snippet": "<featured snippet paragraph 40-60 words>",
-    "faq_schema": "<complete FAQ JSON-LD with script tags, 3 questions>"
+    {"status": "red", "name": "", "message": ""}
+  ]
+}
+
+yoast must have exactly 20 items (status = red/orange/green):
+Outbound links, Keyphrase distribution, Keyphrase in meta description, Text length (need 300+ words), SEO title width (max 60 chars), Keyphrase in image alt, Keyphrase in SEO title beginning, Keyphrase in slug, Images, Internal links, Keyphrase in introduction, Keyphrase density (0.5-2.5%), Keyphrase length, Meta description length, Single H1, Keyphrase in subheading, Competing links, Subheading distribution, Paragraph length, Sentence length.
+geo: 6 items — E-E-A-T signals, Citation-worthy facts, Structured answer format, Author expertise, Data freshness, AI-quotable statements.
+aeo: 6 items — FAQ readiness, Featured snippet opportunity, People Also Ask, Direct answer format, Schema readiness, Question-based headings.
+output.title: optimized SEO title max 60 chars.
+output.meta: optimized meta 120-155 chars with keyword.
+output.snippet: featured snippet paragraph 40-60 words, plain text only.
+IMPORTANT: output.snippet must be plain text — no JSON, no quotes, no special characters.`;
+}
+
+// ─── PROMPT 2: FAQ schema only (plain text, not embedded in JSON) ───
+function buildPromptFAQ() {
+  const keyword = document.getElementById('keyword').value.trim();
+  const title   = document.getElementById('seoTitle').value.trim();
+  return `Write a complete FAQ Schema JSON-LD for a WordPress article.
+Keyword: "${keyword}"
+Article title: "${title || keyword}"
+Requirements:
+- 3 questions relevant to the keyword
+- Each answer 40-60 words
+- Valid JSON-LD format
+- Wrap in <script type="application/ld+json"> tags
+Return ONLY the script block, nothing else.`;
+}
+
+// ─── CALL API (shared) ───
+async function callAPI(apiKey, provider, prompt, maxTokens) {
+  if (provider === 'claude') {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: maxTokens,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    totalTokens += (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0);
+    return data.content[0].text;
   }
-}
-
-Yoast checks must cover ALL of these (red=problem, orange=improvement, green=good):
-Outbound links, Keyphrase distribution, Keyphrase in meta description, Text length (min 300 words), SEO title width (max 60 chars), Keyphrase in image alt attributes, Keyphrase in SEO title (beginning), Keyphrase in slug, Images, Internal links, Keyphrase in introduction, Keyphrase density (0.5-2.5%), Keyphrase length, Meta description length, Single H1 title, Keyphrase in subheading, Competing links.
-Plus Readability: Subheading distribution, Paragraph length, Sentence length.
-
-GEO checks (6): E-E-A-T signals, Citation-worthy facts/stats, Structured answer format, Author expertise signals, Data freshness indicators, AI-quotable statements.
-AEO checks (6): FAQ structure readiness, Featured snippet opportunity, People Also Ask coverage, Direct answer format, Schema markup readiness, Question-based headings.`;
-}
-
-// ─── API CALLERS ───
-async function callClaude(apiKey, prompt) {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1000,
-      messages: [{ role: 'user', content: prompt }]
-    })
-  });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
-  totalTokens += (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0);
-  return data.content[0].text;
-}
-
-async function callGemini(apiKey, prompt) {
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 1000, temperature: 0.1 }
-    })
-  });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
-  totalTokens += (data.usageMetadata?.totalTokenCount || 0);
-  return data.candidates[0].content.parts[0].text;
-}
-
-async function callOpenAI(apiKey, prompt) {
+  if (provider === 'gemini') {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: maxTokens, temperature: 0.1 }
+      })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    totalTokens += (data.usageMetadata?.totalTokenCount || 0);
+    return data.candidates[0].content.parts[0].text;
+  }
+  // openai
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
     body: JSON.stringify({
       model: 'gpt-4o-mini',
-      max_tokens: 1000,
+      max_tokens: maxTokens,
       temperature: 0.1,
       messages: [{ role: 'user', content: prompt }]
     })
@@ -1320,20 +1339,31 @@ async function callOpenAI(apiKey, prompt) {
   return data.choices[0].message.content;
 }
 
-// ─── MAIN ANALYSIS ───
+// ─── SAFE JSON PARSER ───
+function parseJSON(raw) {
+  // strip markdown fences
+  let s = raw.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+  // find first { and last }
+  const a = s.indexOf('{'), b = s.lastIndexOf('}');
+  if (a !== -1 && b > a) s = s.slice(a, b + 1);
+  // fix trailing commas
+  s = s.replace(/,(\s*[}\]])/g, '$1');
+  return JSON.parse(s);
+}
+
+// ─── MAIN ANALYSIS (2-step) ───
 async function runAnalysis() {
-  const content = getContent();
-  const keyword = document.getElementById('keyword').value.trim();
-  const apiKey = document.getElementById('apiKey').value.trim();
+  const content  = getContent();
+  const keyword  = document.getElementById('keyword').value.trim();
+  const apiKey   = document.getElementById('apiKey').value.trim();
   const provider = document.getElementById('apiProvider').value;
 
   if (!content) {
-    if (inputMode === 'url') toast('กรุณาดึงเนื้อหาจาก URL ก่อน');
-    else toast('กรุณาใส่เนื้อหาบทความ');
+    toast(inputMode === 'url' ? 'กรุณาดึงเนื้อหาจาก URL ก่อน' : 'กรุณาใส่เนื้อหาบทความ');
     return;
   }
   if (!keyword) { toast('กรุณาใส่ Focus Keyphrase'); return; }
-  if (!apiKey) { toast('กรุณาใส่ API Key'); return; }
+  if (!apiKey)  { toast('กรุณาใส่ API Key'); return; }
 
   const btn = document.getElementById('analyzeBtn');
   btn.disabled = true;
@@ -1341,49 +1371,49 @@ async function runAnalysis() {
   document.getElementById('btnText').textContent = 'กำลังวิเคราะห์...';
 
   try {
-    const prompt = buildPrompt();
-    let rawText = '';
+    // ── Step 1: scores + checks (JSON, no nested JSON inside) ──
+    const raw1 = await callAPI(apiKey, provider, buildPromptChecks(), 2000);
+    const r = parseJSON(raw1);
 
-    if (provider === 'claude') rawText = await callClaude(apiKey, prompt);
-    else if (provider === 'gemini') rawText = await callGemini(apiKey, prompt);
-    else rawText = await callOpenAI(apiKey, prompt);
+    if (!r.scores || !r.yoast || !r.output) {
+      throw new Error('ผลลัพธ์ไม่ครบ — กรุณาลองใหม่');
+    }
 
-    // Parse JSON
-    const clean = rawText.replace(/```json\n?|\n?```/g, '').trim();
-    const r = JSON.parse(clean);
+    // ── Step 2: FAQ schema (plain text, fetched separately) ──
+    document.getElementById('btnText').textContent = 'กำลังสร้าง FAQ Schema...';
+    let faqSchema = '';
+    try {
+      faqSchema = await callAPI(apiKey, provider, buildPromptFAQ(), 600);
+      // keep only the <script>...</script> block
+      const m = faqSchema.match(/<script[\s\S]*?<\/script>/i);
+      if (m) faqSchema = m[0];
+    } catch(e) {
+      faqSchema = '<!-- FAQ Schema generation failed, please retry -->';
+    }
 
-    // Display scores
+    // ── Render ──
     displayScores(r.scores.seo, r.scores.geo, r.scores.aeo);
-
-    // Render Yoast
     renderYoastChecks(r.yoast);
+    renderChecks('geo-body', 'ph-geo', r.geo || []);
+    renderChecks('aeo-body', 'ph-aeo', r.aeo || []);
 
-    // Render GEO
-    renderChecks('geo-body', 'ph-geo', r.geo);
-
-    // Render AEO
-    renderChecks('aeo-body', 'ph-aeo', r.aeo);
-
-    // Render Outputs
     const o = r.output;
     renderOutputs([
-      { label: `SEO Title (${o.title.length}/60)`, value: o.title },
-      { label: `Meta Description (${o.meta.length}/155)`, value: o.meta },
-      { label: 'URL Slug', value: o.slug },
-      { label: 'Focus Keyword แนะนำ', value: o.focus_keyword },
-      { label: 'Secondary Keywords', value: o.secondary },
-      { label: 'Featured Snippet Paragraph', value: o.snippet },
-      { label: 'FAQ Schema JSON-LD', value: o.faq_schema, mono: true },
+      { label: `SEO Title (${(o.title||'').length}/60)`,        value: o.title          || '' },
+      { label: `Meta Description (${(o.meta||'').length}/155)`, value: o.meta           || '' },
+      { label: 'URL Slug',           value: o.slug             || '' },
+      { label: 'Focus Keyword',      value: o.focus_keyword    || '' },
+      { label: 'Secondary Keywords', value: o.secondary        || '' },
+      { label: 'Featured Snippet',   value: o.snippet          || '' },
+      { label: 'FAQ Schema JSON-LD', value: faqSchema,              mono: true },
     ], { title: o.title, desc: o.meta, slug: o.slug });
 
-    // Token counter
     document.getElementById('tokenUsed').textContent = totalTokens.toLocaleString();
-
     toast('วิเคราะห์เสร็จแล้ว');
 
   } catch (err) {
     toast('เกิดข้อผิดพลาด: ' + (err.message || 'กรุณาลองใหม่'));
-    console.error(err);
+    console.error('[SEO Analyzer]', err);
   } finally {
     btn.disabled = false;
     document.getElementById('spinner').style.display = 'none';
