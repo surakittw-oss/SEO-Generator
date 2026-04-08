@@ -1280,7 +1280,7 @@ IMPORTANT: output.snippet must be plain text — no JSON, no quotes, no special 
 function buildPromptFAQ() {
   const keyword = document.getElementById('keyword').value.trim();
   const title   = document.getElementById('seoTitle').value.trim();
-  // Note: split </script> so browser parser doesn't close the JS block early
+  const openTag  = '<' + 'script type="application/ld+json">';
   const closeTag = '</' + 'script>';
   return `Write a complete FAQ Schema JSON-LD for a WordPress article.
 Keyword: "${keyword}"
@@ -1289,7 +1289,7 @@ Requirements:
 - 3 questions relevant to the keyword
 - Each answer 40-60 words
 - Valid JSON-LD format
-- Wrap in <script type="application/ld+json"> ... ${closeTag} tags
+- Wrap in ${openTag} ... ${closeTag} tags
 Return ONLY the script block, nothing else.`;
 }
 
@@ -1386,7 +1386,7 @@ async function runAnalysis() {
     let faqSchema = '';
     try {
       faqSchema = await callAPI(apiKey, provider, buildPromptFAQ(), 600);
-      // extract <script>...</script> block safely
+      // extract the schema script block from response
       const scriptRe = /<script[\s\S]*?<\/script>/i;
       const m = faqSchema.match(scriptRe);
       if (m) faqSchema = m[0];
